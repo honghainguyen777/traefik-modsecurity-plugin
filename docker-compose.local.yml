@@ -1,0 +1,61 @@
+version: "3.7"
+
+services:
+  traefik:
+    image: "traefik:v2.11.4"
+    ports:
+      - "80:80"
+      - "8080:8080"
+    command:
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --experimental.localPlugins.traefik-modsecurity-plugin.moduleName=github.com/madebymode/traefik-modsecurity-plugin
+      - --providers.docker=true
+      - --entrypoints.http.address=:80
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - '.:/plugins-local/src/github.com/madebymode/traefik-modsecurity-plugin'
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.traefik.loadbalancer.server.port=8080
+      # use traefiks built-in maxRequestBodyBytes middleware - there's no need for us to bake this ourselves
+      - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=1048576
+      - traefik.http.middlewares.waf.plugin.traefik-modsecurity-plugin.modSecurityUrl=http://waf:8080
+      - traefik.http.middlewares.waf.plugin.traefik-modsecurity-plugin.jailEnabled=true
+
+
+
+  waf:
+    image: owasp/modsecurity-crs:4.3.0-apache-alpine-202406090906
+    environment:
+      - PARANOIA=1
+      - ANOMALY_INBOUND=10
+      - ANOMALY_OUTBOUND=5
+      - BACKEND=http://dummy
+      # New in CRS 4
+      - REPORTING_LEVEL=2
+
+      #######################################################
+      # ModSecurity ENV Variables
+      #######################################################
+
+      - MODSEC_AUDIT_LOG_FORMAT=JSON
+      - MODSEC_RULE_ENGINE=On
+
+
+  dummy:
+    image: traefik/whoami
+
+  website-with-waf:
+    image: traefik/whoami
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.website-with-waf.rule=PathPrefix(`/website`)
+      - traefik.http.routers.website-with-waf.middlewares=waf@docker
+  website:
+    image: traefik/whoami
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.website.rule=PathPrefix(`/bypass`)
