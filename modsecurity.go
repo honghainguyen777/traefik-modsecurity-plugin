@@ -18,6 +18,8 @@ import (
 // Config the plugin configuration.
 type Config struct {
 	TimeoutMillis                  int64  `json:"timeoutMillis,omitempty"`
+	DialTimeoutMillis              int64  `json:"dialTimeoutMillis,omitempty"`
+  IdleConnTimeoutMillis          int64  `json:"idleConnTimeoutMillis,omitempty"`
 	ModSecurityUrl                 string `json:"modSecurityUrl,omitempty"`
 	JailEnabled                    bool   `json:"jailEnabled,omitempty"`
 	BadRequestsThresholdCount      int    `json:"badRequestsThresholdCount,omitempty"`
@@ -29,6 +31,8 @@ type Config struct {
 func CreateConfig() *Config {
 	return &Config{
 		TimeoutMillis:                  2000,
+		DialTimeoutMillis:              0,
+    IdleConnTimeoutMillis:          0,
 		JailEnabled:                    false,
 		BadRequestsThresholdCount:      25,
 		BadRequestsThresholdPeriodSecs: 600,
@@ -68,15 +72,26 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}
 
 	// dialer is a custom net.Dialer with a specified timeout and keep-alive duration.
+	// dialer uses caller-supplied timeout if present.
+  dialTO := 30 * time.Second
+  if config.DialTimeoutMillis > 0 {
+		dialTO = time.Duration(config.DialTimeoutMillis) * time.Millisecond
+  }
 	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
+		Timeout:   dialTO,
 		KeepAlive: 30 * time.Second,
 	}
 
 	// transport is a custom http.Transport with various timeouts and configurations for optimal performance.
+	// Idle-connection TTL can now be tuned too.
+  idleTO := 90 * time.Second
+  if config.IdleConnTimeoutMillis > 0 {
+		idleTO = time.Duration(config.IdleConnTimeoutMillis) * time.Millisecond
+  }
+
 	transport := &http.Transport{
 		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
+		IdleConnTimeout:       idleTO,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		TLSClientConfig: &tls.Config{
