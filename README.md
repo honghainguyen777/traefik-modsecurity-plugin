@@ -2,9 +2,16 @@
 
 ![Banner](./img/banner.png)
 
-this is a fork of the original: https://github.com/acouvreur/traefik-modsecurity-plugin
+This is a fork of the original <https://github.com/madebymode/traefik-modsecurity-plugin>.
 
-This fork introduces alpine images, CRS 4.x suppport, a custom http.transport, and a 429 jail for repeat offenders
+This fork introduces three transport-level knobs—`dialTimeoutMillis`, `idleConnTimeoutMillis` and
+`maxIdleConnsPerHost`—that let you keep Traefik’s **goroutine count** and the node’s **conn-track
+table** under control when your cluster serves thousands of back-ends.  
+In short, they allow you to:
+
+* **Fail fast** if the ModSecurity service is unreachable (`dialTimeoutMillis`).
+* **Prune** idle keep-alive sockets sooner (`idleConnTimeoutMillis`).
+* **Cap** the number of idle sockets Traefik keeps per host (`maxIdleConnsPerHost`).
 
 see:  https://github.com/traefik/plugindemo#troubleshooting
 
@@ -53,15 +60,19 @@ time.
 
 ## Configuration
 
-This plugin supports these configuration:
+| Key | Required? | Default | What it does |
+|-----|-----------|---------|--------------|
+| **`modSecurityUrl`** | **yes** | — | URL of the OWASP / ModSecurity service (e.g. `http://modsecurity-crs.modsecurity-crs.svc:8080`). |
+| `timeoutMillis` | no | **2000 ms** | *Whole* request budget (dial + request + response). |
+| `dialTimeoutMillis` | no | **30000 ms** | Time limit for **establishing the TCP connection** to the ModSecurity service. If the socket isn’t connected within this window, the plugin aborts with `Bad Gateway`. |
+| `idleConnTimeoutMillis` | no | **90000 ms** | **How long an idle keep-alive socket can stay open** before it is closed and its goroutine reclaimed. Lowering this prevents a slow leak of goroutines under spiky traffic. |
+| `maxIdleConnsPerHost` | no | **2** | Upper bound on the **number of idle sockets** the plugin keeps for `modSecurityUrl`. Set higher for very high-RPS environments, lower to conserve file descriptors / conn-track slots. |
+| `jailEnabled` | no | `false` | Enables 429 “jail” for repeat offenders. |
+| `jailTimeDurationSecs` | no | `3600` | How long a client IP stays in jail (seconds). |
+| `badRequestsThresholdCount` | no | `25` | Number of 403 replies that trips the jail. |
+| `badRequestsThresholdPeriodSecs` | no | `600` | Sliding-window length (seconds) for the above threshold. |
 
-* `modSecurityUrl`: (**mandatory**) it's the URL for the owasp/modsecurity container.
-* `timeoutMillis`: (optional) timeout in milliseconds for the http client to talk with modsecurity container. (default 2
-  seconds)
-* `jailEnabled`:  (optional) 429 jail for repeat offenders (based on threshold settings)
-* `JailTimeDurationSecs`:  (optional) how long a client will be jailed for, in seconds
-* `badRequestsThresholdCount`: (optional) # of 403s a clientIP can trigger from OWASP before being adding to jail
-* `badRequestsThresholdPeriodSecs` (optional) # the period, in seconds, that the threshold must meet before a client is added to the 429 jail
+> **Tip:** leave a field out (or set it to `0`) to use the default shown in the table.
 
 ## Local development (docker-compose.local.yml)
 
