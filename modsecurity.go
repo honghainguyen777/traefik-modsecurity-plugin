@@ -25,6 +25,7 @@ type Config struct {
 	BadRequestsThresholdCount      int    `json:"badRequestsThresholdCount,omitempty"`
 	BadRequestsThresholdPeriodSecs int    `json:"badRequestsThresholdPeriodSecs,omitempty"` // Period in seconds to track attempts
 	JailTimeDurationSecs           int    `json:"jailTimeDurationSecs,omitempty"`                     // How long a client spends in Jail in seconds
+	MaxIdleConnsPerHost            int    `json:"maxIdleConnsPerHost,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
@@ -89,8 +90,15 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		idleTO = time.Duration(config.IdleConnTimeoutMillis) * time.Millisecond
   }
 
+	// per-host idle-pool cap
+  perHost := 2
+  if config.MaxIdleConnsPerHost > 0 {
+    perHost = config.MaxIdleConnsPerHost
+  }
+
 	transport := &http.Transport{
 		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   perHost,
 		IdleConnTimeout:       idleTO,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
