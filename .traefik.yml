@@ -1,4 +1,4 @@
-displayName: MxM OWASP CRS Modsecurity Plugin
+displayName: OWASP CRS Modsecurity Plugin
 type: middleware
 
 import: github.com/honghainguyen777/traefik-modsecurity-plugin
