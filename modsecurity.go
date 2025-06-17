@@ -38,6 +38,7 @@ func CreateConfig() *Config {
 		BadRequestsThresholdCount:      25,
 		BadRequestsThresholdPeriodSecs: 600,
 		JailTimeDurationSecs:           600,
+		MaxIdleConnsPerHost:            2,
 	}
 }
 
