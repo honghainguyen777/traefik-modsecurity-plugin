@@ -1,4 +1,4 @@
-module intern.gitlab.tu-berlin.de/kubernetes/traefik-modsecurity-plugin
+module github.com/honghainguyen777/traefik-modsecurity-plugin
 
 go 1.21
 
