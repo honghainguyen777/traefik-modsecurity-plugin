@@ -2,244 +2,250 @@
 package traefik_modsecurity_plugin
 
 import (
-	"bytes"
-	"context"
-	"crypto/tls"
-	"fmt"
-	"io"
-	"log"
-	"net"
-	"net/http"
-	"os"
-	"sync"
-	"time"
+  "bytes"
+  "context"
+  "crypto/tls"
+  "fmt"
+  "io"
+  "log"
+  "net"
+  "net/http"
+  "os"
+  "sync"
+  "time"
 )
 
 // Config the plugin configuration.
 type Config struct {
-	TimeoutMillis                  int64  `json:"timeoutMillis,omitempty"`
-	DialTimeoutMillis              int64  `json:"dialTimeoutMillis,omitempty"`
+  TimeoutMillis                  int64  `json:"timeoutMillis,omitempty"`
+  DialTimeoutMillis              int64  `json:"dialTimeoutMillis,omitempty"`
   IdleConnTimeoutMillis          int64  `json:"idleConnTimeoutMillis,omitempty"`
-	ModSecurityUrl                 string `json:"modSecurityUrl,omitempty"`
-	JailEnabled                    bool   `json:"jailEnabled,omitempty"`
-	BadRequestsThresholdCount      int    `json:"badRequestsThresholdCount,omitempty"`
-	BadRequestsThresholdPeriodSecs int    `json:"badRequestsThresholdPeriodSecs,omitempty"` // Period in seconds to track attempts
-	JailTimeDurationSecs           int    `json:"jailTimeDurationSecs,omitempty"`                     // How long a client spends in Jail in seconds
-	MaxIdleConnsPerHost            int    `json:"maxIdleConnsPerHost,omitempty"`
-	UnhealthyWafBackOffPeriodSecs  int    `json:"unhealthyWafBackOffPeriodSecs,omitempty"`  // If the WAF is unhealthy, back off
+  ModSecurityUrl                 string `json:"modSecurityUrl,omitempty"`
+  JailEnabled                    bool   `json:"jailEnabled,omitempty"`
+  BadRequestsThresholdCount      int    `json:"badRequestsThresholdCount,omitempty"`
+  BadRequestsThresholdPeriodSecs int    `json:"badRequestsThresholdPeriodSecs,omitempty"`
+  JailTimeDurationSecs           int    `json:"jailTimeDurationSecs,omitempty"`
+  MaxConnsPerHost                int    `json:"maxConnsPerHost,omitempty"`
+  MaxIdleConnsPerHost            int    `json:"maxIdleConnsPerHost,omitempty"`
+  UnhealthyWafBackOffPeriodSecs  int    `json:"unhealthyWafBackOffPeriodSecs,omitempty"`
 }
 
 // CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
-	return &Config{
-		TimeoutMillis:                  2000,
-		DialTimeoutMillis:              0,
+  return &Config{
+    TimeoutMillis:                  2000,
+    DialTimeoutMillis:              0,
     IdleConnTimeoutMillis:          0,
-		JailEnabled:                    false,
-		BadRequestsThresholdCount:      25,
-		BadRequestsThresholdPeriodSecs: 600,
-		JailTimeDurationSecs:           600,
-		MaxIdleConnsPerHost:            2,
-		UnhealthyWafBackOffPeriodSecs:  0, // 0 to NOT backoff (original behavior)
-	}
+    JailEnabled:                    false,
+    BadRequestsThresholdCount:      25,
+    BadRequestsThresholdPeriodSecs: 600,
+    JailTimeDurationSecs:           600,
+    MaxConnsPerHost:                4,
+    MaxIdleConnsPerHost:            2,
+    UnhealthyWafBackOffPeriodSecs:  0,
+  }
 }
 
 // Modsecurity a Modsecurity plugin.
 type Modsecurity struct {
-	next                           http.Handler
-	modSecurityUrl                 string
-	name                           string
-	httpClient                     *http.Client
-	logger                         *log.Logger
-	jailEnabled                    bool
-	badRequestsThresholdCount      int
-	badRequestsThresholdPeriodSecs int
-	unhealthyWafBackOffPeriodSecs  int
-	unhealthyWaf                   bool // If the WAF is unhealthy
-	unhealthyWafMutex              sync.Mutex
-	jailTimeDurationSecs           int
-	jail                           map[string][]time.Time
-	jailRelease                    map[string]time.Time
-	jailMutex                      sync.RWMutex
+  next                           http.Handler
+  modSecurityUrl                 string
+  name                           string
+  httpClient                     *http.Client
+  logger                         *log.Logger
+  jailEnabled                    bool
+  badRequestsThresholdCount      int
+  badRequestsThresholdPeriodSecs int
+  unhealthyWafBackOffPeriodSecs  int
+  unhealthyWaf                   bool
+  unhealthyWafMutex              sync.Mutex
+  jailTimeDurationSecs           int
+  jail                           map[string][]time.Time
+  jailRelease                    map[string]time.Time
+  jailMutex                      sync.RWMutex
 }
 
 // New creates a new Modsecurity plugin with the given configuration.
-// It returns an HTTP handler that can be integrated into the Traefik middleware chain.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	if len(config.ModSecurityUrl) == 0 {
-		return nil, fmt.Errorf("modSecurityUrl cannot be empty")
-	}
+  if len(config.ModSecurityUrl) == 0 {
+    return nil, fmt.Errorf("modSecurityUrl cannot be empty")
+  }
 
-	// Use a custom client with predefined timeout of 2 seconds
-	var timeout time.Duration
-	if config.TimeoutMillis == 0 {
-		timeout = 2 * time.Second
-	} else {
-		timeout = time.Duration(config.TimeoutMillis) * time.Millisecond
-	}
+  // whole-request timeout
+  var timeout time.Duration
+  if config.TimeoutMillis == 0 {
+    timeout = 2 * time.Second
+  } else {
+    timeout = time.Duration(config.TimeoutMillis) * time.Millisecond
+  }
 
-	// dialer is a custom net.Dialer with a specified timeout and keep-alive duration.
-	// dialer uses caller-supplied timeout if present.
+  // dial timeout
   dialTO := 30 * time.Second
   if config.DialTimeoutMillis > 0 {
-		dialTO = time.Duration(config.DialTimeoutMillis) * time.Millisecond
+    dialTO = time.Duration(config.DialTimeoutMillis) * time.Millisecond
   }
-	dialer := &net.Dialer{
-		Timeout:   dialTO,
-		KeepAlive: 30 * time.Second,
-	}
+  dialer := &net.Dialer{
+    Timeout:   dialTO,
+    KeepAlive: 30 * time.Second,
+  }
 
-	// transport is a custom http.Transport with various timeouts and configurations for optimal performance.
-	// Idle-connection TTL can now be tuned too.
+  // idle keep-alive TTL
   idleTO := 90 * time.Second
   if config.IdleConnTimeoutMillis > 0 {
-		idleTO = time.Duration(config.IdleConnTimeoutMillis) * time.Millisecond
+    idleTO = time.Duration(config.IdleConnTimeoutMillis) * time.Millisecond
   }
 
-	// per-host idle-pool cap
+  // per-host idle-pool cap
   perHost := 2
   if config.MaxIdleConnsPerHost > 0 {
     perHost = config.MaxIdleConnsPerHost
   }
 
-	transport := &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   perHost,
-		IdleConnTimeout:       idleTO,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		},
-		ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, addr)
-		},
-	}
+  // NEW: active-connection cap
+  active := 4
+  if config.MaxConnsPerHost > 0 {
+    active = config.MaxConnsPerHost
+  }
 
-	return &Modsecurity{
-		modSecurityUrl:                 config.ModSecurityUrl,
-		next:                           next,
-		name:                           name,
-		httpClient:                     &http.Client{Timeout: timeout, Transport: transport},
-		logger:                         log.New(os.Stdout, "", log.LstdFlags),
-		jailEnabled:                    config.JailEnabled,
-		badRequestsThresholdCount:      config.BadRequestsThresholdCount,
-		badRequestsThresholdPeriodSecs: config.BadRequestsThresholdPeriodSecs,
-		jailTimeDurationSecs:           config.JailTimeDurationSecs,
-		jail:                           make(map[string][]time.Time),
-		jailRelease:                    make(map[string]time.Time),
-		unhealthyWafBackOffPeriodSecs:  config.UnhealthyWafBackOffPeriodSecs,
-	}, nil
+  transport := &http.Transport{
+    MaxIdleConns:          100,
+    MaxConnsPerHost:       active,
+    MaxIdleConnsPerHost:   perHost,
+    IdleConnTimeout:       idleTO,
+    TLSHandshakeTimeout:   10 * time.Second,
+    ExpectContinueTimeout: 1 * time.Second,
+    TLSClientConfig: &tls.Config{
+      MinVersion: tls.VersionTLS12,
+    },
+    ForceAttemptHTTP2: true,
+    DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+      return dialer.DialContext(ctx, network, addr)
+    },
+  }
+
+  return &Modsecurity{
+    modSecurityUrl:                 config.ModSecurityUrl,
+    next:                           next,
+    name:                           name,
+    httpClient:                     &http.Client{Timeout: timeout, Transport: transport},
+    logger:                         log.New(os.Stdout, "", log.LstdFlags),
+    jailEnabled:                    config.JailEnabled,
+    badRequestsThresholdCount:      config.BadRequestsThresholdCount,
+    badRequestsThresholdPeriodSecs: config.BadRequestsThresholdPeriodSecs,
+    jailTimeDurationSecs:           config.JailTimeDurationSecs,
+    jail:                           make(map[string][]time.Time),
+    jailRelease:                    make(map[string]time.Time),
+    unhealthyWafBackOffPeriodSecs:  config.UnhealthyWafBackOffPeriodSecs,
+  }, nil
 }
 
 func (a *Modsecurity) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if isWebsocket(req) {
-		a.next.ServeHTTP(rw, req)
-		return
-	}
+  if isWebsocket(req) {
+    a.next.ServeHTTP(rw, req)
+    return
+  }
 
-	clientIP := req.RemoteAddr
+  clientIP := req.RemoteAddr
 
-	// Check if the client is in jail, if jail is enabled
-	if a.jailEnabled {
-		a.jailMutex.RLock()
-		if a.isClientInJail(clientIP) {
-			a.jailMutex.RUnlock()
-			a.logger.Printf("client %s is jailed", clientIP)
-			http.Error(rw, "Too Many Requests", http.StatusTooManyRequests)
-			return
-		}
-		a.jailMutex.RUnlock()
-	}
+  // jail check
+  if a.jailEnabled {
+    a.jailMutex.RLock()
+    if a.isClientInJail(clientIP) {
+      a.jailMutex.RUnlock()
+      a.logger.Printf("client %s is jailed", clientIP)
+      http.Error(rw, "Too Many Requests", http.StatusTooManyRequests)
+      return
+    }
+    a.jailMutex.RUnlock()
+  }
 
-	// If the WAF is unhealthy just forward the request early. No concurrency control here on purpose.
-	if a.unhealthyWaf {
-		a.next.ServeHTTP(rw, req)
-		return
-	}
+  // breaker check
+  if a.unhealthyWaf {
+    a.next.ServeHTTP(rw, req)
+    return
+  }
 
-	// Buffer the body if we want to read it here and send it in the request.
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		a.logger.Printf("fail to read incoming request: %s", err.Error())
-		http.Error(rw, "", http.StatusBadGateway)
-		return
-	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
+  // buffer body
+  body, err := io.ReadAll(req.Body)
+  if err != nil {
+    a.logger.Printf("fail to read incoming request: %s", err.Error())
+    http.Error(rw, "", http.StatusBadGateway)
+    return
+  }
+  req.Body = io.NopCloser(bytes.NewReader(body))
 
-	// Create a new URL from the raw RequestURI sent by the client
-	url := fmt.Sprintf("%s%s", a.modSecurityUrl, req.RequestURI)
+  url := fmt.Sprintf("%s%s", a.modSecurityUrl, req.RequestURI)
+  proxyReq, err := http.NewRequest(req.Method, url, bytes.NewReader(body))
+  if err != nil {
+    a.logger.Printf("fail to prepare forwarded request: %s", err.Error())
+    http.Error(rw, "", http.StatusBadGateway)
+    return
+  }
+  proxyReq.Header = make(http.Header)
+  for h, val := range req.Header {
+    proxyReq.Header[h] = val
+  }
 
-	proxyReq, err := http.NewRequest(req.Method, url, bytes.NewReader(body))
-	if err != nil {
-		a.logger.Printf("fail to prepare forwarded request: %s", err.Error())
-		http.Error(rw, "", http.StatusBadGateway)
-		return
-	}
+  resp, err := a.httpClient.Do(proxyReq)
+  if err != nil {
+    a.markUnhealthy()
+    a.next.ServeHTTP(rw, req)
+    return
+  }
+  defer resp.Body.Close()
 
-	// We may want to filter some headers, otherwise we could just use a shallow copy
-	proxyReq.Header = make(http.Header)
-	for h, val := range req.Header {
-		proxyReq.Header[h] = val
-	}
+  if resp.StatusCode >= 500 {
+    a.markUnhealthy()
+  }
 
-	resp, err := a.httpClient.Do(proxyReq)
-	if err != nil {
-		if a.unhealthyWafBackOffPeriodSecs > 0 {
-			a.unhealthyWafMutex.Lock()
-			if a.unhealthyWaf == false {
-				a.logger.Printf("marking modsec as unhealthy for %ds fail to send HTTP request to modsec: %s", a.unhealthyWafBackOffPeriodSecs, err.Error())
-				a.unhealthyWaf = true
-				time.AfterFunc(time.Duration(a.unhealthyWafBackOffPeriodSecs)*time.Second, func() {
-					a.unhealthyWafMutex.Lock()
-					defer a.unhealthyWafMutex.Unlock()
-					a.unhealthyWaf = false
-					a.logger.Printf("modsec unhealthy backoff expired")
-				})
-			}
-			a.unhealthyWafMutex.Unlock()
-			a.next.ServeHTTP(rw, req)
-			return
-		}
-		
-		a.logger.Printf("fail to send HTTP request to modsec: %s", err.Error())
-		http.Error(rw, "", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
+  if resp.StatusCode >= 400 {
+    if resp.StatusCode == http.StatusForbidden && a.jailEnabled {
+      a.recordOffense(clientIP)
+    }
+    forwardResponse(resp, rw)
+    return
+  }
 
-	if resp.StatusCode >= 400 {
-		if resp.StatusCode == http.StatusForbidden && a.jailEnabled {
-			a.recordOffense(clientIP)
-		}
-		forwardResponse(resp, rw)
-		return
-	}
+  a.next.ServeHTTP(rw, req)
+}
 
-	a.next.ServeHTTP(rw, req)
+// markUnhealthy toggles the breaker for the configured back-off window.
+func (a *Modsecurity) markUnhealthy() {
+  if a.unhealthyWafBackOffPeriodSecs == 0 {
+    return
+  }
+  a.unhealthyWafMutex.Lock()
+  if !a.unhealthyWaf {
+    a.unhealthyWaf = true
+    back := a.unhealthyWafBackOffPeriodSecs
+    a.logger.Printf("marking modsec as unhealthy for %ds", back)
+    time.AfterFunc(time.Duration(back)*time.Second, func() {
+      a.unhealthyWafMutex.Lock()
+      a.unhealthyWaf = false
+      a.unhealthyWafMutex.Unlock()
+      a.logger.Printf("modsec unhealthy backoff expired")
+    })
+  }
+  a.unhealthyWafMutex.Unlock()
 }
 
 func isWebsocket(req *http.Request) bool {
-	for _, header := range req.Header["Upgrade"] {
-		if header == "websocket" {
-			return true
-		}
-	}
-	return false
+  for _, header := range req.Header["Upgrade"] {
+    if header == "websocket" {
+      return true
+    }
+  }
+  return false
 }
 
 func forwardResponse(resp *http.Response, rw http.ResponseWriter) {
-	// Copy headers
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			rw.Header().Add(k, v)
-		}
-	}
-	// Copy status
-	rw.WriteHeader(resp.StatusCode)
-	// Copy body
-	io.Copy(rw, resp.Body)
+  for k, vv := range resp.Header {
+    for _, v := range vv {
+      rw.Header().Add(k, v)
+    }
+  }
+  rw.WriteHeader(resp.StatusCode)
+  io.Copy(rw, resp.Body)
 }
 
 func (a *Modsecurity) recordOffense(clientIP string) {
