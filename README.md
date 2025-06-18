@@ -71,6 +71,7 @@ time.
 | `jailTimeDurationSecs` | no | `3600` | How long a client IP stays in jail (seconds). |
 | `badRequestsThresholdCount` | no | `25` | Number of 403 replies that trips the jail. |
 | `badRequestsThresholdPeriodSecs` | no | `600` | Sliding-window length (seconds) for the above threshold. |
+| `unhealthyWafBackOffPeriodSecs` | no | `0` | the period, in seconds, to backoff if calls to modsecurity fail. Default to 0. Default behavior is to send a 502 Bad Gateway when there are problems communicating with modsec. |
 
 > **Tip:** leave a field out (or set it to `0`) to use the default shown in the table.
 

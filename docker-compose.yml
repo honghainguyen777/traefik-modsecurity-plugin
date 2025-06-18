@@ -24,6 +24,7 @@ services:
       - traefik.http.middlewares.limit.buffering.maxRequestBodyBytes=1048576
       - traefik.http.middlewares.waf.plugin.traefik-modsecurity-plugin.modSecurityUrl=http://waf:8080
       - traefik.http.middlewares.waf.plugin.traefik-modsecurity-plugin.jailEnabled=true
+      - traefik.http.middlewares.waf.plugin.traefik-modsecurity-plugin.unhealthyWafBackOffPeriodSecs=5
 
   waf:
     image: owasp/modsecurity-crs:4.3.0-apache-alpine-202406090906
